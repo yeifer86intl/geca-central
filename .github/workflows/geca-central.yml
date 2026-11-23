@@ -1,0 +1,55 @@
+name: GECA Central - acumular y alertar
+on:
+  schedule:
+    - cron: '40 16 * * *' # 12:40 Caracas (UTC-4), tras inicio Steam 07:00; puede retrasarse
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: geca-central-writer
+  cancel-in-progress: false
+jobs:
+  central:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GECA_EXPERIMENTAL_DAYS: ${{ vars.GECA_EXPERIMENTAL_DAYS || '2' }}
+      GH_TOKEN: ${{ github.token }}
+      GECA_STEAM_REPO: ${{ vars.GECA_STEAM_REPO || 'yeifergeca/geca-radar' }}
+      GECA_TWITCH_REPO: ${{ vars.GECA_TWITCH_REPO || 'yeifergeca/geca-twitch' }}
+      GECA_REPO: ${{ github.repository }}
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Instalar GitHub CLI y verificar credenciales
+        run: |
+          gh --version
+          test -n "$GH_TOKEN"
+      - name: Ejecutar pruebas antes de actualizar estado
+        run: python -m unittest discover -s tests -v
+      - name: Restaurar estado validado, obligatorio
+        run: python scripts/release_state.py restore --db state/geca.sqlite3
+      - name: Incorporar incrementos de las dos fuentes
+        env:
+          GH_TOKEN: ${{ secrets.GECA_READ_TOKEN }}
+        run: python scripts/pull_deltas.py --db state/geca.sqlite3 --limit 1000
+      - name: Evaluar reglas del PDF y exportar resumen
+        run: python scripts/central.py evaluate --db state/geca.sqlite3 --out outputs --experimental-days "$GECA_EXPERIMENTAL_DAYS"
+      - name: Verificar integridad
+        run: python scripts/central.py verify --db state/geca.sqlite3
+      - name: Publicar nueva versión verificada y conservar la anterior
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release_state.py publish --db state/geca.sqlite3 --prune
+      - name: Subir solamente reportes ligeros
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geca-central-reportes
+          path: outputs/
+          retention-days: 30
+          if-no-files-found: warn
