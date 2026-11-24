@@ -35,7 +35,7 @@ jobs:
         run: python scripts/release_state.py restore --db state/geca.sqlite3
       - name: Incorporar incrementos de las dos fuentes
         env:
-          GH_TOKEN: ${{ secrets.GECA_READ_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: python scripts/pull_deltas.py --db state/geca.sqlite3 --limit 1000
       - name: Evaluar reglas del PDF y exportar resumen
         run: python scripts/central.py evaluate --db state/geca.sqlite3 --out outputs --experimental-days "$GECA_EXPERIMENTAL_DAYS"
