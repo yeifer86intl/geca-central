@@ -1,7 +1,8 @@
 name: GECA Central - acumular y alertar
 on:
   schedule:
-    - cron: '40 16 * * *' # 12:40 Caracas (UTC-4), tras inicio Steam 07:00; puede retrasarse
+    - cron: '47 22 * * *' # Central: 22:47 España (Europe/Madrid; verano/invierno automaticos)
+      timezone: Europe/Madrid
   workflow_dispatch:
 permissions:
   contents: write
@@ -16,8 +17,8 @@ jobs:
     env:
       GECA_EXPERIMENTAL_DAYS: ${{ vars.GECA_EXPERIMENTAL_DAYS || '2' }}
       GH_TOKEN: ${{ github.token }}
-      GECA_STEAM_REPO: ${{ vars.GECA_STEAM_REPO || 'yeifergeca/geca-radar' }}
-      GECA_TWITCH_REPO: ${{ vars.GECA_TWITCH_REPO || 'yeifergeca/geca-twitch' }}
+      GECA_STEAM_REPO: ${{ vars.GECA_STEAM_REPO || 'yeifer86intl/geca-radar-public' }}
+      GECA_TWITCH_REPO: ${{ vars.GECA_TWITCH_REPO || 'yeifer86intl/geca-twitch-public' }}
       GECA_REPO: ${{ github.repository }}
       PYTHONPATH: src
     steps:
@@ -33,6 +34,55 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Restaurar estado validado, obligatorio
         run: python scripts/release_state.py restore --db state/geca.sqlite3
+      - name: Validar que los deltas de Steam y Twitch sean del día de Madrid
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY_GUARD'
+          import datetime as dt
+          import json
+          import os
+          import subprocess
+          from zoneinfo import ZoneInfo
+
+          hoy = dt.datetime.now(ZoneInfo('Europe/Madrid')).date()
+          fuentes = [
+              (os.environ['GECA_STEAM_REPO'], 'geca-steam-delta'),
+              (os.environ['GECA_TWITCH_REPO'], 'geca-twitch-delta'),
+          ]
+
+          def github_api(endpoint):
+              p = subprocess.run(['gh', 'api', endpoint], capture_output=True, text=True)
+              if p.returncode:
+                  raise RuntimeError(f'Error en {endpoint}: {p.stderr.strip()}')
+              return json.loads(p.stdout)
+
+          for repo, nombre in fuentes:
+              path = f'repos/{repo}/actions/artifacts?name={nombre}&per_page=100'
+              datos = github_api(path)
+              validos = []
+              for a in datos.get('artifacts', []):
+                  if a.get('name') != nombre or a.get('expired'):
+                      continue
+                  fecha = dt.datetime.fromisoformat(a['created_at'].replace('Z', '+00:00'))
+                  if fecha.astimezone(ZoneInfo('Europe/Madrid')).date() != hoy:
+                      continue
+                  run = a.get('workflow_run') or {}
+                  rid = run.get('id')
+                  if not rid:
+                      continue
+                  r = github_api(f'repos/{repo}/actions/runs/{rid}')
+                  if r.get('status') == 'completed' and r.get('conclusion') == 'success':
+                      validos.append((rid, fecha))
+              if not validos:
+                  raise SystemExit(
+                      f'BLOQUEADO: {repo} no publicó {nombre} hoy '
+                      f'{hoy} (Europe/Madrid) desde una ejecución exitosa. '
+                      'No se evaluarán alertas con datos antiguos.'
+                  )
+              rid, fecha = max(validos, key=lambda v: v[1])
+              print(f'OK {repo}: {nombre}, run {rid}, fecha UTC {fecha.isoformat()}')
+          PY_GUARD
       - name: Incorporar incrementos de las dos fuentes
         env:
           GH_TOKEN: ${{ github.token }}
